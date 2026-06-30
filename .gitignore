@@ -1,5 +1,5 @@
-# Binaries
-tuibik
+# Binaries (root-level built binary, not the source directory)
+/tuibik
 tuibik.exe
 *.exe
 *.exe~
