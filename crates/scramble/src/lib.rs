@@ -1,16 +1,13 @@
 //! `scramble` — WCA random-state scramble generation.
 //!
-//! Uses `m2p-core` (Kociemba two-phase, GPL-3.0) to generate a uniformly
-//! random cube state and then compute the move sequence that produces it from
-//! a solved cube (the inverse of the solver's solution). This yields
+//! Draws a uniformly random cube state from a seeded RNG, solves it with
+//! `min2phase` (Kociemba two-phase, MIT) and inverts the solution to get the
+//! move sequence that produces that state from a solved cube. This yields
 //! competition-quality random-state scrambles.
 
-use std::sync::Arc;
-
-use cube::{parse_sequence, Cube, Move};
-use m2p_core::{tools, Solver, Tables};
+use cube::{facelet, parse_sequence, Cube, CubieCube, Move};
 use rand::rngs::StdRng;
-use rand::{RngCore, SeedableRng};
+use rand::{Rng, SeedableRng};
 
 /// A generated scramble: the parsed moves plus their WCA-notation text.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -35,59 +32,50 @@ pub enum ScrambleError {
     Parse(String, cube::MoveParseError),
 }
 
-/// Holds the precomputed Kociemba tables (built once) and generates scrambles.
+/// Generates scrambles from a seedable RNG.
 ///
-/// `Tables::build` takes ~100ms, so construct a `Scrambler` once and reuse it.
+/// `min2phase` builds its lookup tables once, lazily, on first use and shares
+/// them process-wide; `new`/`with_seed` trigger that build up front so the
+/// first `generate` call is fast. Construct a `Scrambler` once and reuse it.
 pub struct Scrambler {
-    tables: Arc<Tables>,
     rng: StdRng,
     /// Max solver search depth; WCA-quality scrambles are typically <= 21.
-    max_depth: i32,
+    max_depth: u8,
 }
 
 impl Scrambler {
-    /// Build a scrambler with freshly computed tables and OS-seeded RNG.
+    /// Build a scrambler with tables ready and an OS-seeded RNG.
     pub fn new() -> Self {
-        Scrambler {
-            tables: Arc::new(Tables::build(true)),
-            rng: StdRng::from_entropy(),
-            max_depth: 21,
-        }
+        Self::from_rng(StdRng::from_entropy())
     }
 
     /// Build a scrambler with a fixed RNG seed (deterministic, for tests).
     pub fn with_seed(seed: u64) -> Self {
-        Scrambler {
-            tables: Arc::new(Tables::build(true)),
-            rng: StdRng::seed_from_u64(seed),
-            max_depth: 21,
-        }
+        Self::from_rng(StdRng::seed_from_u64(seed))
+    }
+
+    fn from_rng(rng: StdRng) -> Self {
+        // Force min2phase's global table construction now (solving a solved
+        // cube is trivial once the tables exist).
+        let _ = min2phase::solve(&Cube::solved().to_facelet_str(), 21);
+        Scrambler { rng, max_depth: 21 }
     }
 
     /// Generate one WCA random-state scramble.
     pub fn generate(&mut self) -> Result<Scramble, ScrambleError> {
         // 1. Uniformly random solvable cube state as 54-char facelets.
-        let facelets = {
-            let rng: &mut dyn RngCore = &mut self.rng;
-            tools::random_cube(rng)
-        };
+        let state = random_state(&mut self.rng);
+        let facelets = facelet_str(&state);
 
-        // 2. Ask the solver for the sequence that SCRAMBLES a solved cube into
-        //    this state — i.e. the inverse of the solution — via the
-        //    INVERSE_SOLUTION verbose flag.
-        let mut solver = Solver::with_tables(self.tables.clone());
-        let raw = solver
-            .solve(
-                &facelets,
-                self.max_depth,
-                1_000_000, // probe_max
-                0,         // probe_min
-                m2p_core::verbose::INVERSE_SOLUTION,
-            )
-            .map_err(|e| ScrambleError::Solver(e.to_string()))?;
-
-        let text = normalize(&raw);
-        let moves = parse_sequence(&text).map_err(|e| ScrambleError::Parse(text.clone(), e))?;
+        // 2. Solve it, then invert the solution: the reversed sequence of
+        //    inverted moves scrambles a solved cube into this state.
+        let raw = min2phase::solve(&facelets, self.max_depth);
+        if raw.starts_with("Error") {
+            return Err(ScrambleError::Solver(raw));
+        }
+        let solution = parse_sequence(&raw).map_err(|e| ScrambleError::Parse(raw.clone(), e))?;
+        let moves: Vec<Move> = solution.iter().rev().map(|m| m.inverse()).collect();
+        let text = cube::format_sequence(&moves);
 
         Ok(Scramble { moves, text })
     }
@@ -99,10 +87,48 @@ impl Default for Scrambler {
     }
 }
 
-/// Normalize solver output spacing: the solver emits tokens like `"U "`, `"R2"`,
-/// `"F'"` sometimes separated by extra spaces. Collapse to single spaces.
-fn normalize(raw: &str) -> String {
-    raw.split_whitespace().collect::<Vec<_>>().join(" ")
+/// 54-char URFDLB facelet string for a cubie state.
+fn facelet_str(cc: &CubieCube) -> String {
+    const CH: [char; 6] = ['U', 'R', 'F', 'D', 'L', 'B'];
+    facelet::to_facelets(cc)
+        .iter()
+        .map(|&f| CH[f as usize])
+        .collect()
+}
+
+/// Uniformly random solvable cubie state.
+fn random_state(rng: &mut StdRng) -> CubieCube {
+    let mut cc = CubieCube::solved();
+    let parity_c = shuffle(rng, &mut cc.cp);
+    let parity_e = shuffle(rng, &mut cc.ep);
+    // Corner permutation parity must equal edge permutation parity; swapping
+    // two edges flips it (a bijection, so the result stays uniform).
+    if parity_c != parity_e {
+        cc.ep.swap(10, 11);
+    }
+    // Orientations: last piece is fixed by the twist/flip sum constraints.
+    for i in 0..7 {
+        cc.co[i] = rng.gen_range(0..3);
+    }
+    cc.co[7] = (3 - cc.co[..7].iter().sum::<u8>() % 3) % 3;
+    for i in 0..11 {
+        cc.eo[i] = rng.gen_range(0..2);
+    }
+    cc.eo[11] = cc.eo[..11].iter().sum::<u8>() % 2;
+    cc
+}
+
+/// Fisher-Yates shuffle; returns the parity (0/1) of the applied permutation.
+fn shuffle<const N: usize>(rng: &mut StdRng, a: &mut [u8; N]) -> u8 {
+    let mut parity = 0;
+    for i in 0..N - 1 {
+        let j = rng.gen_range(i..N);
+        if i != j {
+            a.swap(i, j);
+            parity ^= 1;
+        }
+    }
+    parity
 }
 
 #[cfg(test)]
@@ -123,8 +149,7 @@ mod tests {
         let mut s = Scrambler::with_seed(7);
         for _ in 0..20 {
             let sc = s.generate().unwrap();
-            // Random-state solutions are typically 16..=21 moves; allow a small
-            // margin. They must never exceed max_depth.
+            // Random-state solutions are 16..=21 moves.
             assert!(
                 sc.moves.len() <= 21,
                 "scramble too long: {} ({})",
@@ -132,7 +157,7 @@ mod tests {
                 sc.text
             );
             assert!(
-                sc.moves.len() >= 15,
+                sc.moves.len() >= 16,
                 "scramble suspiciously short: {}",
                 sc.text
             );
@@ -156,35 +181,53 @@ mod tests {
     }
 
     #[test]
-    fn cube_matches_m2p_from_scramble() {
+    fn cube_matches_min2phase_from_moves() {
         // Regression: our cubie->facelet conversion must be byte-identical to
-        // m2p-core's own scramble application, across several scrambles.
+        // min2phase's own scramble application, across several scrambles.
         let mut s = Scrambler::with_seed(2024);
         for _ in 0..10 {
             let sc = s.generate().unwrap();
             let our = sc.cube().to_facelet_str();
-            let m2p_state = tools::from_scramble(&sc.text, &s.tables);
-            assert_eq!(our, m2p_state, "mismatch for scramble '{}'", sc.text);
+            let theirs = min2phase::from_moves(&sc.text).expect("min2phase parses scramble");
+            assert_eq!(our, theirs, "mismatch for scramble '{}'", sc.text);
         }
     }
 
     #[test]
     fn cube_facelets_match_solver_state() {
-        // Cross-check: our cubie->facelet convention must match m2p-core's.
-        // Generate a scramble, apply it with OUR cube, and confirm the solver
-        // agrees the resulting state is solvable back to solved by re-solving.
+        // Our facelet string must be accepted by min2phase and solve.
         let mut s = Scrambler::with_seed(2024);
         let sc = s.generate().unwrap();
         let our_facelets = sc.cube().to_facelet_str();
-
-        // The solver must accept our facelet string and solve it (length >= 0).
-        let mut solver = Solver::with_tables(s.tables.clone());
-        let solution = solver.solve(&our_facelets, 21, 1_000_000, 0, 0);
+        let solution = min2phase::solve(&our_facelets, 21);
         assert!(
-            solution.is_ok(),
-            "solver rejected our facelet string '{}': {:?}",
+            !solution.starts_with("Error"),
+            "solver rejected our facelet string '{}': {}",
             our_facelets,
-            solution.err()
+            solution
         );
+    }
+
+    #[test]
+    fn same_seed_same_scrambles() {
+        let mut a = Scrambler::with_seed(5);
+        let mut b = Scrambler::with_seed(5);
+        for _ in 0..5 {
+            assert_eq!(a.generate().unwrap(), b.generate().unwrap());
+        }
+    }
+
+    #[test]
+    fn length_and_unsolved_over_many_seeds() {
+        for seed in 0..100 {
+            let sc = Scrambler::with_seed(seed).generate().unwrap();
+            assert!(
+                (16..=21).contains(&sc.moves.len()),
+                "seed {seed}: {} moves ({})",
+                sc.moves.len(),
+                sc.text
+            );
+            assert!(!sc.cube().is_solved(), "seed {seed} produced solved cube");
+        }
     }
 }

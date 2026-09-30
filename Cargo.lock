@@ -300,6 +300,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 
 [[package]]
+name = "lazy_static"
+version = "1.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
+
+[[package]]
 name = "libc"
 version = "0.2.189"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -356,10 +362,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "m2p-core"
-version = "0.1.0"
-source = "git+https://github.com/RuiminYan/min2phase-rust#112dc2ea6d607e2f7d8a1f2308a683ee95a590cc"
+name = "min2phase"
+version = "0.2.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a639c3d60aab401be39bd3e2e946326e3a75a44f02316bb1b3c8092288a2f13a"
 dependencies = [
+ "lazy_static",
  "rand",
 ]
 
@@ -570,7 +578,7 @@ name = "scramble"
 version = "0.1.0"
 dependencies = [
  "cube",
- "m2p-core",
+ "min2phase",
  "rand",
  "thiserror",
 ]
