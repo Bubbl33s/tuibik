@@ -1,0 +1,9 @@
+[package]
+name = "cube"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "3x3 Rubik's cube model, WCA move notation, and net rendering data for tuibik"
+
+[dependencies]
+thiserror.workspace = true

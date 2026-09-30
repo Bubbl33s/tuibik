@@ -1,0 +1,9 @@
+[package]
+name = "stats"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Speedcubing statistics (averages, means, deviations) for tuibik"
+
+[dependencies]
+store = { path = "../store" }

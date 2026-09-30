@@ -1,0 +1,12 @@
+[package]
+name = "scramble"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "WCA random-state scramble generation for tuibik (wraps m2p-core)"
+
+[dependencies]
+cube = { path = "../cube" }
+m2p-core = { git = "https://github.com/RuiminYan/min2phase-rust" }
+rand = "0.8"
+thiserror.workspace = true

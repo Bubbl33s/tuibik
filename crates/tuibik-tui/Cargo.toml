@@ -1,0 +1,19 @@
+[package]
+name = "tuibik-tui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "csTimer-style TUI Rubik's cube timer"
+
+[[bin]]
+name = "tuibik"
+path = "src/main.rs"
+
+[dependencies]
+cube = { path = "../cube" }
+scramble = { path = "../scramble" }
+stats = { path = "../stats" }
+store = { path = "../store" }
+anyhow.workspace = true
+ratatui = "0.29"
+crossterm = "0.28"
