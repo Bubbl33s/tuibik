@@ -1,0 +1,228 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing v<semver> tag to build and publish
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate release source
+    runs-on: ubuntu-22.04
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+      version: ${{ steps.release.outputs.version }}
+      commit: ${{ steps.release.outputs.commit }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1.2.0
+        with:
+          toolchain: stable
+      - id: release
+        name: Resolve and validate the release tag
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          DISPATCH_TAG: ${{ inputs.tag }}
+          PUSH_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          tag="$PUSH_TAG"
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            tag="$DISPATCH_TAG"
+          fi
+
+          if ! [[ "$tag" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-([0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*))?(\+([0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*))?$ ]]; then
+            echo "Release tag must be v<semver>; got '$tag'." >&2
+            exit 1
+          fi
+
+          git fetch --force origin main 'refs/tags/*:refs/tags/*'
+          commit="$(git rev-parse --verify "refs/tags/$tag^{commit}")" || {
+            echo "Tag '$tag' does not resolve to a commit." >&2
+            exit 1
+          }
+          if ! git merge-base --is-ancestor "$commit" origin/main; then
+            echo "Tag '$tag' ($commit) is not reachable from origin/main." >&2
+            exit 1
+          fi
+
+          version="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "tuibik-tui") | .version')"
+          if [[ -z "$version" || "$version" == "null" || "v$version" != "$tag" ]]; then
+            echo "Tag '$tag' does not match workspace package version '$version'." >&2
+            exit 1
+          fi
+
+          {
+            echo "tag=$tag"
+            echo "version=$version"
+            echo "commit=$commit"
+          } >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build ${{ matrix.target }}
+    needs: validate
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            extension: tar.gz
+            executable: tuibik
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+            extension: tar.gz
+            executable: tuibik
+          - runner: macos-14
+            target: aarch64-apple-darwin
+            extension: tar.gz
+            executable: tuibik
+          - runner: windows-2022
+            target: x86_64-pc-windows-msvc
+            extension: zip
+            executable: tuibik.exe
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.validate.outputs.commit }}
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1.2.0
+        with:
+          toolchain: stable
+          targets: ${{ matrix.target }}
+      - name: Test locked workspace
+        run: cargo test --workspace --locked
+      - name: Build release binary
+        run: cargo build --locked --release --package tuibik-tui --bin tuibik --target ${{ matrix.target }}
+      - name: Package Unix archive
+        if: runner.os != 'Windows'
+        shell: bash
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+          TARGET: ${{ matrix.target }}
+          EXECUTABLE: ${{ matrix.executable }}
+        run: |
+          set -euo pipefail
+          package="tuibik-${VERSION}-${TARGET}"
+          mkdir -p "dist/$package"
+          cp "target/$TARGET/release/$EXECUTABLE" "dist/$package/$EXECUTABLE"
+          cp README.md LICENSE-MIT LICENSE-APACHE "dist/$package/"
+          tar -C dist -czf "dist/$package.tar.gz" "$package"
+          tar -tzf "dist/$package.tar.gz" | grep -qx "$package/$EXECUTABLE"
+          tar -tzf "dist/$package.tar.gz" | grep -qx "$package/README.md"
+          tar -tzf "dist/$package.tar.gz" | grep -qx "$package/LICENSE-MIT"
+          tar -tzf "dist/$package.tar.gz" | grep -qx "$package/LICENSE-APACHE"
+          echo "archive_name=$package.tar.gz" >> "$GITHUB_ENV"
+      - name: Package Windows archive
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+          TARGET: ${{ matrix.target }}
+          EXECUTABLE: ${{ matrix.executable }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $package = "tuibik-${env:VERSION}-${env:TARGET}"
+          $packageRoot = "dist/$package"
+          New-Item -ItemType Directory -Force -Path $packageRoot | Out-Null
+          Copy-Item "target/$env:TARGET/release/$env:EXECUTABLE" $packageRoot
+          Copy-Item README.md, LICENSE-MIT, LICENSE-APACHE $packageRoot
+          $archive = "dist/$package.zip"
+          Compress-Archive -Path $packageRoot -DestinationPath $archive
+          Expand-Archive -Path $archive -DestinationPath verify
+          $root = (Resolve-Path verify).Path
+          $names = (Get-ChildItem -Path verify -Recurse -File | ForEach-Object { $_.FullName.Substring($root.Length + 1).Replace('\', '/') })
+          @("$package/$env:EXECUTABLE", "$package/README.md", "$package/LICENSE-MIT", "$package/LICENSE-APACHE") | ForEach-Object {
+            if ($names -notcontains $_) { throw "Archive is missing $_" }
+          }
+          "archive_name=$package.zip" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-${{ matrix.target }}
+          path: dist/${{ env.archive_name }}
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub Release
+    needs: [validate, build]
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: release-*
+          path: release-assets
+          merge-multiple: true
+      - name: Verify archives, checksums, and publish
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.validate.outputs.tag }}
+          VERSION: ${{ needs.validate.outputs.version }}
+          COMMIT: ${{ needs.validate.outputs.commit }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          cd release-assets
+          expected=(
+            "tuibik-${VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+            "tuibik-${VERSION}-x86_64-apple-darwin.tar.gz"
+            "tuibik-${VERSION}-aarch64-apple-darwin.tar.gz"
+            "tuibik-${VERSION}-x86_64-pc-windows-msvc.zip"
+          )
+          for archive in "${expected[@]}"; do
+            [[ -f "$archive" ]] || { echo "Missing $archive" >&2; exit 1; }
+          done
+          [[ "$(find . -maxdepth 1 -type f | wc -l)" -eq 4 ]] || {
+            echo "Unexpected package artifacts." >&2
+            exit 1
+          }
+          sha256sum "${expected[@]}" > SHA256SUMS
+
+          release_json=""
+          if release_json="$(gh api "repos/$REPOSITORY/releases/tags/$TAG" 2>/dev/null)"; then
+            target="$(jq -r '.target_commitish' <<<"$release_json")"
+            [[ "$target" == "$COMMIT" ]] || {
+              echo "Existing release for $TAG targets $target, not $COMMIT." >&2
+              exit 1
+            }
+            mapfile -t assets < <(jq -r '.assets[].name' <<<"$release_json")
+            allowed=("${expected[@]}" SHA256SUMS)
+            for asset in "${assets[@]}"; do
+              if [[ " ${allowed[*]} " != *" $asset "* ]]; then
+                echo "Existing release has unexpected asset '$asset'." >&2
+                exit 1
+              fi
+            done
+            missing=()
+            for asset in "${allowed[@]}"; do
+              if [[ " ${assets[*]} " == *" $asset "* ]]; then
+                mkdir -p existing
+                gh release download "$TAG" --pattern "$asset" --dir existing
+                cmp --silent "$asset" "existing/$asset" || {
+                  echo "Existing asset '$asset' conflicts with this release." >&2
+                  exit 1
+                }
+              else
+                missing+=("$asset")
+              fi
+            done
+            if (( ${#missing[@]} )); then
+              gh release upload "$TAG" "${missing[@]}"
+            fi
+          else
+            gh release create "$TAG" --target "$COMMIT" --title "tuibik $TAG" --generate-notes "${expected[@]}" SHA256SUMS
+          fi
