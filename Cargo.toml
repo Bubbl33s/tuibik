@@ -17,7 +17,7 @@ repository = ""
 
 [workspace.dependencies]
 anyhow = "1.0"
-thiserror = "1.0"
+thiserror = "2.0"
 
 # min2phase prints table-build and solve progress to stdout when built with
 # debug assertions, which corrupts the TUI. Keep it (and speed it up) in dev.
