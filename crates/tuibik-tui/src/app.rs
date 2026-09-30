@@ -8,6 +8,7 @@ use scramble::{Scramble, Scrambler};
 use stats::{StatValue, Summary};
 use store::{Penalty, Solve, Store};
 
+use crate::cube3d::{self, Axis, Mat3};
 use crate::event::{Input, KeyContext, KeyMode};
 use crate::sessions::{SessionMenu, SessionMode};
 use crate::settings::{Row, Settings, ROWS};
@@ -22,8 +23,8 @@ const MIN_SOLVE_MS: i64 = 200;
 pub const VIEW_STEP_DEG: f32 = 15.0;
 /// Auto-spin speed of the 3D view (degrees per second).
 const SPIN_DEG_PER_S: f32 = 60.0;
-/// The 3D view's pitch limit, so the cube never flips over the poles.
-pub const MAX_PITCH_DEG: f32 = 89.0;
+/// Duration of an animated 90° axis turn in the 3D view (ms).
+const TURN_MS: f32 = 200.0;
 
 /// The modal layer shown over (or instead of parts of) the dashboard.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -40,35 +41,112 @@ pub enum Overlay {
     Cube3D,
 }
 
-/// Orientation and spin state of the 3D cube view.
+/// Orientation, turn animation and spin state of the 3D cube view.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct View3d {
-    /// Rotation about the vertical axis (degrees, 0..360 once rotated).
-    pub yaw: f32,
-    /// Rotation about the horizontal screen axis (degrees, clamped).
-    pub pitch: f32,
+    /// Rotation from cube to screen coordinates, as drawn now.
+    pub current: Mat3,
+    /// Where `current` is heading: fixed axis turns land here exactly.
+    pub target: Mat3,
     /// Whether the cube keeps turning on its own.
     pub spin: bool,
     /// Timestamp of the last auto-spin step.
     last_spin_ms: Option<u64>,
+    /// The axis turn being animated, if it has started.
+    anim: Option<TurnAnim>,
+}
+
+/// An eased rotation of `from` by `angle` about the screen-space `axis`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct TurnAnim {
+    from: Mat3,
+    axis: [f32; 3],
+    angle: f32,
+    start_ms: u64,
+    duration_ms: f32,
 }
 
 impl Default for View3d {
     fn default() -> Self {
+        let m = cube3d::default_orientation();
         View3d {
-            yaw: crate::cube3d::DEFAULT_YAW,
-            pitch: crate::cube3d::DEFAULT_PITCH,
+            current: m,
+            target: m,
             spin: false,
             last_spin_ms: None,
+            anim: None,
         }
     }
 }
 
+/// Smooth ease-in-out over `t` in 0..=1.
+fn ease(t: f32) -> f32 {
+    t * t * (3.0 - 2.0 * t)
+}
+
 impl View3d {
-    /// Turn by the given angles, keeping yaw in 0..360 and pitch in range.
-    pub fn rotate(&mut self, d_yaw: f32, d_pitch: f32) {
-        self.yaw = (self.yaw + d_yaw).rem_euclid(360.0);
-        self.pitch = (self.pitch + d_pitch).clamp(-MAX_PITCH_DEG, MAX_PITCH_DEG);
+    /// Turn freely by `dx` degrees about the vertical screen axis and `dy`
+    /// degrees about the horizontal one (no limit at the poles). Immediate:
+    /// a running axis turn carries on from the rotated position.
+    pub fn rotate_free(&mut self, dx: f32, dy: f32) {
+        let r = cube3d::mat_mul(
+            &cube3d::rotation(Axis::X, dy),
+            &cube3d::rotation(Axis::Y, dx),
+        );
+        let turn = |m: &Mat3| cube3d::orthonormalize(&cube3d::mat_mul(&r, m));
+        self.current = turn(&self.current);
+        self.target = turn(&self.target);
+        if let Some(a) = &mut self.anim {
+            a.from = turn(&a.from);
+            a.axis = cube3d::rotate_vec(&r, a.axis);
+        }
+    }
+
+    /// Queue an exact 90° turn about the cube's own `axis` (x toward R, y
+    /// toward U, z toward F; see [`cube3d::quarter_turn`]). [`View3d::advance`]
+    /// animates toward it; turns pressed meanwhile chain onto the target.
+    pub fn turn_axis(&mut self, axis: Axis, reverse: bool) {
+        self.target = cube3d::mat_mul(&self.target, &cube3d::quarter_turn(axis, reverse));
+        // Restart the easing from where the cube is drawn now.
+        self.anim = None;
+    }
+
+    /// Whether an axis turn is still on its way.
+    pub fn is_animating(&self) -> bool {
+        self.current != self.target
+    }
+
+    /// Move the animation to `now`, landing exactly on the target when done.
+    pub fn advance(&mut self, now: u64) {
+        if !self.is_animating() {
+            self.anim = None;
+            return;
+        }
+        let a = *self.anim.get_or_insert_with(|| {
+            let rel = cube3d::mat_mul(&self.target, &cube3d::transpose(&self.current));
+            let (axis, angle) = cube3d::axis_angle(&rel);
+            TurnAnim {
+                from: self.current,
+                axis,
+                angle,
+                start_ms: now,
+                duration_ms: TURN_MS * angle / std::f32::consts::FRAC_PI_2,
+            }
+        });
+        let t = now.saturating_sub(a.start_ms) as f32 / a.duration_ms;
+        if a.duration_ms <= 0.0 || t >= 1.0 {
+            self.current = self.target;
+            self.anim = None;
+        } else {
+            let r = cube3d::rotation_about(a.axis, a.angle * ease(t));
+            self.current = cube3d::mat_mul(&r, &a.from);
+        }
+    }
+
+    /// Jump to the end of any running turn.
+    fn finish_turn(&mut self) {
+        self.current = self.target;
+        self.anim = None;
     }
 
     /// Back to the default orientation (spin is left as it is).
@@ -85,16 +163,16 @@ impl View3d {
         self.last_spin_ms = on.then_some(now);
     }
 
-    /// Advance auto-spin to `now`.
+    /// Advance auto-spin and any axis turn to `now`.
     fn tick(&mut self, now: u64) {
-        if !self.spin {
-            return;
+        if self.spin {
+            if let Some(last) = self.last_spin_ms {
+                let dt = now.saturating_sub(last) as f32 / 1000.0;
+                self.rotate_free(dt * SPIN_DEG_PER_S, 0.0);
+            }
+            self.last_spin_ms = Some(now);
         }
-        if let Some(last) = self.last_spin_ms {
-            let dt = now.saturating_sub(last) as f32 / 1000.0;
-            self.rotate(dt * SPIN_DEG_PER_S, 0.0);
-        }
-        self.last_spin_ms = Some(now);
+        self.advance(now);
     }
 }
 
@@ -530,24 +608,34 @@ impl App {
         match input {
             Input::Toggle3d | Input::Cancel | Input::Quit => {
                 self.view3d.set_spin(false, now);
+                self.view3d.finish_turn();
                 self.overlay = Overlay::None;
             }
-            Input::Left => self.view3d.rotate(-step, 0.0),
-            Input::Right => self.view3d.rotate(step, 0.0),
-            Input::Up => self.view3d.rotate(0.0, -step),
-            Input::Down => self.view3d.rotate(0.0, step),
+            Input::ViewAxis(axis, reverse) => self.view3d.turn_axis(axis, reverse),
+            Input::Yes => self.view3d.turn_axis(Axis::Y, false),
+            Input::Left => self.view3d.rotate_free(-step, 0.0),
+            Input::Right => self.view3d.rotate_free(step, 0.0),
+            Input::Up => self.view3d.rotate_free(0.0, -step),
+            Input::Down => self.view3d.rotate_free(0.0, step),
             Input::ToggleSpin => {
                 let on = !self.view3d.spin;
                 self.view3d.set_spin(on, now);
             }
-            Input::ResetView => self.view3d.reset(),
+            Input::ResetView | Input::JumpTop => self.view3d.reset(),
             _ => {}
         }
     }
 
     /// Whether the screen changes on its own and needs frequent redraws.
     pub fn needs_fast_ticks(&self) -> bool {
-        self.timer.is_active() || (self.overlay == Overlay::Cube3D && self.view3d.spin)
+        self.timer.is_active()
+            || (self.overlay == Overlay::Cube3D && self.view3d.spin)
+            || self.is_animating()
+    }
+
+    /// Whether a 3D axis turn is animating (redraw at full frame rate).
+    pub fn is_animating(&self) -> bool {
+        self.overlay == Overlay::Cube3D && self.view3d.is_animating()
     }
 
     // ===== Scramble preview =====
@@ -1581,24 +1669,209 @@ mod tests {
         assert_ne!(app.overlay, Overlay::Cube3D);
     }
 
+    /// Largest entry-wise difference between two matrices.
+    fn mat_diff(a: &Mat3, b: &Mat3) -> f32 {
+        (0..9)
+            .map(|k| (a[k / 3][k % 3] - b[k / 3][k % 3]).abs())
+            .fold(0.0, f32::max)
+    }
+
+    /// Run any pending turn animation to its end.
+    fn settle(v: &mut View3d) {
+        v.advance(0);
+        v.advance(60_000);
+    }
+
     #[test]
-    fn cube_view_arrows_rotate_and_pitch_is_clamped() {
+    fn view3d_axis_turns_are_exact() {
+        for axis in [Axis::X, Axis::Y, Axis::Z] {
+            let mut v = View3d::default();
+            for _ in 0..4 {
+                v.turn_axis(axis, false);
+                settle(&mut v);
+            }
+            assert_eq!(v, View3d::default(), "{axis:?} four times");
+            v.turn_axis(axis, false);
+            settle(&mut v);
+            assert_ne!(v, View3d::default());
+            v.turn_axis(axis, true);
+            settle(&mut v);
+            assert_eq!(v, View3d::default(), "{axis:?} then reverse");
+            // Queued without animating in between, too.
+            for _ in 0..4 {
+                v.turn_axis(axis, true);
+            }
+            assert_eq!(v.target, View3d::default().target);
+        }
+    }
+
+    #[test]
+    fn view3d_axis_turn_follows_the_cube_after_free_rotation() {
+        let mut v = View3d::default();
+        v.rotate_free(40.0, -70.0);
+        let before = v.current;
+        v.turn_axis(Axis::Y, false);
+        settle(&mut v);
+        // The cube's own U–D axis (second column) stays put on screen...
+        let col = |m: &Mat3, j: usize| [m[0][j], m[1][j], m[2][j]];
+        let (u0, u1) = (col(&before, 1), col(&v.current, 1));
+        assert!(
+            (0..3).all(|i| (u0[i] - u1[i]).abs() < 1e-5),
+            "{u0:?} {u1:?}"
+        );
+        // ...while F moves to where L was, like the notation's y.
+        let (r0, f1) = (col(&before, 0), col(&v.current, 2));
+        assert!(
+            (0..3).all(|i| (r0[i] + f1[i]).abs() < 1e-5),
+            "{r0:?} {f1:?}"
+        );
+        // Not the screen's vertical axis: that turn would give another result.
+        let screen_y = cube3d::mat_mul(&cube3d::quarter_turn(Axis::Y, false), &before);
+        assert!(mat_diff(&v.current, &screen_y) > 0.1);
+    }
+
+    #[test]
+    fn view3d_turn_animates_with_easing_and_lands_exactly() {
+        let mut v = View3d::default();
+        let start = v.current;
+        v.turn_axis(Axis::X, false);
+        assert!(v.is_animating());
+        assert_eq!(v.current, start, "no jump on press");
+        v.advance(1_000);
+        assert_eq!(v.current, start);
+        let mut frames = vec![start];
+        for t in (1_020..1_200).step_by(20) {
+            v.advance(t);
+            assert!(v.is_animating(), "{t}");
+            frames.push(v.current);
+        }
+        let steps: Vec<f32> = frames.windows(2).map(|w| mat_diff(&w[0], &w[1])).collect();
+        assert!(
+            steps.iter().all(|d| *d > 1e-4),
+            "every frame differs: {steps:?}"
+        );
+        // Eased: slow at both ends, faster in the middle.
+        let mid = steps[steps.len() / 2];
+        assert!(steps[0] < mid && *steps.last().unwrap() < mid, "{steps:?}");
+        v.advance(1_000 + TURN_MS as u64);
+        assert!(!v.is_animating());
+        assert_eq!(v.current, v.target);
+        assert_eq!(
+            v.target,
+            cube3d::mat_mul(&start, &cube3d::quarter_turn(Axis::X, false))
+        );
+    }
+
+    #[test]
+    fn view3d_chained_turns_end_at_180_without_snapping() {
+        let mut v = View3d::default();
+        let start = v.current;
+        v.turn_axis(Axis::Z, false);
+        v.advance(0);
+        let mut prev = v.current;
+        let mut t = 0;
+        let mut max_step: f32 = 0.0;
+        while v.is_animating() {
+            t += 16;
+            if t == 96 {
+                // Second press mid-turn: the cube stays where it is drawn.
+                v.turn_axis(Axis::Z, false);
+                assert_eq!(v.current, prev);
+            }
+            v.advance(t);
+            max_step = max_step.max(mat_diff(&v.current, &prev));
+            prev = v.current;
+            assert!(t < 2_000);
+        }
+        assert!(max_step < 0.3, "no snap between turns: {max_step}");
+        let half = cube3d::mat_mul(&start, &cube3d::rotation(Axis::Z, 180.0));
+        assert!(mat_diff(&v.current, &half) < 1e-6);
+        // Two presses in one batch (exactly 180° apart) also animate there.
+        let mut v = View3d::default();
+        v.turn_axis(Axis::Z, false);
+        v.turn_axis(Axis::Z, false);
+        v.advance(0);
+        v.advance(100);
+        assert!(mat_diff(&v.current, &start) > 1e-3, "moving");
+        settle(&mut v);
+        assert!(mat_diff(&v.current, &half) < 1e-6);
+    }
+
+    #[test]
+    fn view3d_stays_orthonormal_after_many_free_rotations() {
+        let mut v = View3d::default();
+        for i in 0..1000 {
+            v.rotate_free(VIEW_STEP_DEG * 0.37, if i % 3 == 0 { -7.1 } else { 4.3 });
+        }
+        let m = v.current;
+        let id = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+        assert!(mat_diff(&cube3d::mat_mul(&m, &cube3d::transpose(&m)), &id) < 1e-5);
+        v.reset();
+        assert_eq!(v, View3d::default());
+    }
+
+    #[test]
+    fn cube_view_fixed_axis_keys_animate_90_degree_turns() {
+        let mut app = App::test_app(1, true);
+        app.handle_input_at(Input::Toggle3d, 0);
+        let start = app.view3d;
+        assert!(!app.is_animating());
+        app.handle_input_at(Input::ViewAxis(Axis::X, false), 100);
+        assert!(app.is_animating() && app.needs_fast_ticks());
+        app.tick_at(100);
+        app.tick_at(200);
+        assert_ne!(app.view3d.current, start.current, "part way");
+        assert_ne!(app.view3d.current, app.view3d.target);
+        app.tick_at(400);
+        assert!(!app.is_animating());
+        let expected = cube3d::mat_mul(&start.current, &cube3d::quarter_turn(Axis::X, false));
+        assert_eq!(app.view3d.current, expected);
+        app.handle_input_at(Input::ViewAxis(Axis::X, true), 500);
+        app.tick_at(500);
+        app.tick_at(800);
+        assert_eq!(app.view3d, start);
+        // `y` arrives as Yes and turns about the cube's U–D axis.
+        for _ in 0..4 {
+            app.handle_input_at(Input::Yes, 900);
+        }
+        app.tick_at(900);
+        assert!(!app.is_animating(), "four turns: already home");
+        assert_eq!(app.view3d, start);
+        app.handle_input_at(Input::Yes, 1_000);
+        app.handle_input_at(Input::ViewAxis(Axis::Y, true), 1_000);
+        app.tick_at(1_000);
+        assert_eq!(app.view3d, start);
+        for _ in 0..4 {
+            app.handle_input_at(Input::ViewAxis(Axis::Z, false), 1_100);
+        }
+        assert_eq!(app.view3d.target, start.target);
+        assert_eq!(app.overlay, Overlay::Cube3D, "y does not close the view");
+        // Closing mid-turn lands on the target.
+        app.handle_input_at(Input::ViewAxis(Axis::Z, false), 1_200);
+        app.handle_input_at(Input::Cancel, 1_210);
+        assert_eq!(app.view3d.current, app.view3d.target);
+        assert!(!app.needs_fast_ticks());
+    }
+
+    #[test]
+    fn cube_view_free_rotation_passes_through_the_poles() {
         let mut app = App::test_app(1, true);
         app.handle_input(Input::Toggle3d);
-        let start = app.view3d;
+        let start = app.view3d.current;
         app.handle_input(Input::Left);
-        assert_ne!(app.view3d.yaw, start.yaw);
-        assert_eq!(app.view3d.pitch, start.pitch);
+        assert_ne!(app.view3d.current, start);
+        assert!(!app.is_animating(), "free steps are immediate");
         app.handle_input(Input::Right);
-        assert!((app.view3d.yaw.rem_euclid(360.0) - start.yaw.rem_euclid(360.0)).abs() < 1e-3);
-        for _ in 0..30 {
+        assert!(mat_diff(&app.view3d.current, &start) < 1e-5);
+        // A full circle about the horizontal axis: every step moves the cube.
+        let steps = (360.0 / VIEW_STEP_DEG) as usize;
+        let mut prev = app.view3d.current;
+        for _ in 0..steps {
             app.handle_input(Input::Down);
+            assert!(mat_diff(&app.view3d.current, &prev) > 0.1);
+            prev = app.view3d.current;
         }
-        assert_eq!(app.view3d.pitch, MAX_PITCH_DEG);
-        for _ in 0..30 {
-            app.handle_input(Input::Up);
-        }
-        assert_eq!(app.view3d.pitch, -MAX_PITCH_DEG);
+        assert!(mat_diff(&app.view3d.current, &start) < 1e-4);
         // The dashboard selection is untouched while the view is open.
         assert_eq!(app.history_selected, 0);
     }
@@ -1606,10 +1879,21 @@ mod tests {
     #[test]
     fn cube_view_reset_restores_default_orientation() {
         let mut app = App::test_app(1, true);
-        app.handle_input(Input::Toggle3d);
-        app.handle_input(Input::Left);
-        app.handle_input(Input::Up);
-        app.handle_input(Input::ResetView);
+        app.handle_input_at(Input::Toggle3d, 0);
+        app.handle_input_at(Input::Left, 0);
+        app.handle_input_at(Input::Up, 0);
+        app.handle_input_at(Input::ViewAxis(Axis::Z, true), 0);
+        app.tick_at(0);
+        app.tick_at(50);
+        app.handle_input_at(Input::Yes, 60);
+        // Reset mid-animation.
+        app.handle_input_at(Input::ResetView, 70);
+        assert_eq!(app.view3d, View3d::default());
+        // Home resets too.
+        app.handle_input_at(Input::Down, 100);
+        app.handle_input_at(Input::ViewAxis(Axis::X, false), 100);
+        app.tick_at(1_000);
+        app.handle_input_at(Input::JumpTop, 1_100);
         assert_eq!(app.view3d, View3d::default());
     }
 
@@ -1620,14 +1904,15 @@ mod tests {
         assert!(!app.needs_fast_ticks());
         app.handle_input_at(Input::ToggleSpin, 1_000);
         assert!(app.needs_fast_ticks());
-        let y0 = app.view3d.yaw;
+        let m0 = app.view3d.current;
         app.tick_at(1_500);
-        let y1 = app.view3d.yaw;
-        let turned = (y1 - y0).rem_euclid(360.0);
-        assert!((turned - SPIN_DEG_PER_S / 2.0).abs() < 1e-3, "{y0} -> {y1}");
+        let m1 = app.view3d.current;
+        // Half a second of spin about the vertical screen axis.
+        let expected = cube3d::mat_mul(&cube3d::rotation(Axis::Y, SPIN_DEG_PER_S / 2.0), &m0);
+        assert!(mat_diff(&m1, &expected) < 1e-5, "{m0:?} -> {m1:?}");
         app.handle_input_at(Input::ToggleSpin, 1_600);
         app.tick_at(3_000);
-        assert_eq!(app.view3d.yaw, y1, "stopped");
+        assert_eq!(app.view3d.current, m1, "stopped");
         // Closing stops the spin too.
         app.handle_input_at(Input::ToggleSpin, 3_000);
         app.handle_input_at(Input::Cancel, 3_100);

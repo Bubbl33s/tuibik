@@ -33,6 +33,8 @@ type Tui = Terminal<CrosstermBackend<Stdout>>;
 
 /// Tick interval for live timer updates / redraws while something animates.
 const TICK: Duration = Duration::from_millis(30);
+/// Tick interval while a 3D axis turn animates (~60 fps).
+const ANIM_TICK: Duration = Duration::from_millis(16);
 /// Tick interval otherwise (toast expiry); input still wakes the loop at once.
 const IDLE_TICK: Duration = Duration::from_millis(250);
 
@@ -104,23 +106,32 @@ fn run(terminal: &mut Tui, app: &mut App) -> Result<()> {
         terminal.draw(|frame| ui::render(frame, app))?;
 
         // Poll for input with a timeout so we still tick for the live timer
-        // and the spinning 3D view; poll slowly when nothing moves.
-        let timeout = if app.needs_fast_ticks() {
+        // and the moving 3D view; poll slowly when nothing moves.
+        let timeout = if app.is_animating() {
+            ANIM_TICK
+        } else if app.needs_fast_ticks() {
             TICK
         } else {
             IDLE_TICK
         };
         if cevent::poll(timeout)? {
-            match cevent::read()? {
-                Event::Key(key) => {
-                    let input = event::classify_key(key, app.key_context());
-                    if input != Input::None {
-                        app.handle_input(input);
+            // Apply everything already queued before redrawing once, so held
+            // keys (auto-repeat) never build a backlog behind slow frames.
+            loop {
+                match cevent::read()? {
+                    Event::Key(key) => {
+                        let input = event::classify_key(key, app.key_context());
+                        if input != Input::None {
+                            app.handle_input(input);
+                        }
                     }
+                    // The next loop iteration redraws at the new size.
+                    Event::Resize(_, _) => {}
+                    _ => {}
                 }
-                // The next loop iteration redraws at the new size.
-                Event::Resize(_, _) => {}
-                _ => {}
+                if app.should_quit || !cevent::poll(Duration::ZERO)? {
+                    break;
+                }
             }
         }
         // Always advance time-based transitions.

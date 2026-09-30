@@ -473,6 +473,7 @@ pub fn footer_hints(app: &App) -> Vec<(&'static str, &'static str)> {
         ],
         Overlay::ConfirmDelete => vec![("y", "confirm"), ("n", "cancel")],
         Overlay::Cube3D => vec![
+            ("xyz", "turn"),
             ("←→↑↓", "rotate"),
             ("a", if app.view3d.spin { "stop spin" } else { "spin" }),
             ("0", "reset"),
@@ -1098,8 +1099,7 @@ fn render_cube3d(frame: &mut Frame, app: &App, theme: &Theme, area: Rect) {
     match crate::cube3d::render_lines(
         &app.cube,
         &theme.stickers,
-        view.yaw,
-        view.pitch,
+        &view.current,
         inner.width,
         inner.height,
     ) {
@@ -1260,12 +1260,19 @@ fn render_help(frame: &mut Frame, app: &App, theme: &Theme, area: Rect) {
         row("1  2  3", "OK / +2 / DNF for selected solve"),
         row("d", "delete selected solve (asks first)"),
         row("p", "scramble preview (←/→ step)"),
-        row("v", "3D cube view (←→↑↓ rotate, a spin, 0 reset)"),
+        row("v", "3D cube view"),
         row("s", "sessions"),
         row("o", "settings"),
         row("t", "next theme"),
         row("?", "this help"),
         row("q", "quit"),
+        Line::from(""),
+        head("3D view"),
+        row("x y z", "turn 90° about the cube's own axes  (X Y Z back)"),
+        row("←→↑↓ hjkl", "rotate freely"),
+        row("a", "auto-spin on / off"),
+        row("0  Home", "reset orientation"),
+        row("v  Esc", "close"),
         Line::from(""),
         head("Overlays"),
         row("Esc", "close  (never quits)"),
@@ -2354,6 +2361,11 @@ mod tests {
         Overlay::Cube3D,
     ];
 
+    /// Whether `text` holds any half- or quadrant-block pixel glyphs.
+    fn has_blocks(text: &str) -> bool {
+        text.chars().any(|c| "▘▝▀▖▌▞▛▗▚▐▜▄▙▟█".contains(c))
+    }
+
     #[test]
     fn cube3d_view_renders_and_footer_lists_its_keys() {
         let mut app = app_with(&[]);
@@ -2362,16 +2374,22 @@ mod tests {
         app.handle_input(Input::Toggle3d);
         let hints = footer_hints(&app);
         assert_ne!(dash, hints);
-        for desc in ["rotate", "spin", "reset", "close"] {
+        for desc in ["turn", "rotate", "spin", "reset", "close"] {
             assert!(hints.iter().any(|(_, d)| *d == desc), "{desc}");
         }
         let text = render_text(&app, 110, 32);
         assert!(text.contains("Cube 3D"), "{text}");
-        assert!(text.contains('▀'), "half-block pixels");
+        assert!(has_blocks(&text), "block-glyph pixels");
         let footer = text.lines().last().unwrap();
         assert!(
-            footer.contains("rotate") && footer.contains("0 reset"),
+            footer.contains("xyz turn") && footer.contains("rotate") && footer.contains("0 reset"),
             "{footer}"
+        );
+        // All of it fits a 50-column terminal.
+        let narrow = render_text(&app, 50, 16);
+        assert!(
+            narrow.lines().last().unwrap().contains("Esc close"),
+            "{narrow}"
         );
         // The dashboard panels are covered while the view is open.
         assert!(!text.contains("History"));
@@ -2384,12 +2402,12 @@ mod tests {
     fn cube3d_view_refits_on_resize_and_handles_tiny_terminals() {
         let mut app = app_with(&[]);
         app.handle_input(Input::Toggle3d);
-        let rendered_rows = |text: &str| text.lines().filter(|l| l.contains('▀')).count();
+        let rendered_rows = |text: &str| text.lines().filter(|l| has_blocks(l)).count();
         let small = render_text(&app, 60, 16);
         let big = render_text(&app, 160, 50);
         assert!(rendered_rows(&big) > rendered_rows(&small));
         // Minimum dashboard size still draws the cube.
-        assert!(render_text(&app, 40, 12).contains('▀'));
+        assert!(has_blocks(&render_text(&app, 40, 12)));
         // Below it the terminal-too-small message is shown instead.
         let tiny = render_text(&app, 30, 10);
         let flat = tiny.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -2410,7 +2428,7 @@ mod tests {
         let text = screen_text(&terminal);
         let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
         assert!(flat.contains("Terminal too small"), "{text}");
-        assert!(!text.contains('▀'));
+        assert!(!has_blocks(&text));
     }
 
     #[test]

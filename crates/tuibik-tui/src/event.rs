@@ -7,6 +7,8 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use store::Penalty;
 
+use crate::cube3d::Axis;
+
 /// A classified input event that the app reduces into state changes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Input {
@@ -53,6 +55,9 @@ pub enum Input {
     ToggleSpin,
     /// `0`: reset the 3D view orientation.
     ResetView,
+    /// `x`/`X`, `z`/`Z`, `Y`: turn the 3D view 90° about a screen axis
+    /// (uppercase = reverse). Lowercase `y` stays [`Input::Yes`].
+    ViewAxis(Axis, bool),
     /// `?`.
     Help,
     /// `o`.
@@ -154,6 +159,11 @@ fn normal_key(code: KeyCode, is_repeat: bool) -> Input {
         KeyCode::Char('o') => Input::Settings,
         KeyCode::Char('?') => Input::Help,
         KeyCode::Char('y') => Input::Yes,
+        KeyCode::Char('x') => Input::ViewAxis(Axis::X, false),
+        KeyCode::Char('X') => Input::ViewAxis(Axis::X, true),
+        KeyCode::Char('Y') => Input::ViewAxis(Axis::Y, true),
+        KeyCode::Char('z') => Input::ViewAxis(Axis::Z, false),
+        KeyCode::Char('Z') => Input::ViewAxis(Axis::Z, true),
         KeyCode::Char('1') => Input::Penalty(Penalty::Ok),
         KeyCode::Char('2') => Input::Penalty(Penalty::PlusTwo),
         KeyCode::Char('3') => Input::Penalty(Penalty::Dnf),
@@ -351,10 +361,33 @@ mod tests {
             classify_key(press(KeyCode::Char('0')), norm()),
             Input::ResetView
         );
+        for (c, axis, reverse) in [
+            ('x', Axis::X, false),
+            ('X', Axis::X, true),
+            ('Y', Axis::Y, true),
+            ('z', Axis::Z, false),
+            ('Z', Axis::Z, true),
+        ] {
+            assert_eq!(
+                classify_key(press(KeyCode::Char(c)), norm()),
+                Input::ViewAxis(axis, reverse),
+                "{c}"
+            );
+        }
+        // Lowercase y keeps confirming deletes; the 3D view reads it as y.
+        assert_eq!(classify_key(press(KeyCode::Char('y')), norm()), Input::Yes);
         // Timing and text entry keep their own meaning.
         assert_eq!(
             classify_key(press(KeyCode::Char('v')), timing()),
             Input::OtherKey
+        );
+        assert_eq!(
+            classify_key(press(KeyCode::Char('x')), timing()),
+            Input::OtherKey
+        );
+        assert_eq!(
+            classify_key(press(KeyCode::Char('Z')), text()),
+            Input::Char('Z')
         );
         assert_eq!(
             classify_key(press(KeyCode::Char('v')), text()),

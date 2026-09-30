@@ -107,10 +107,95 @@ impl PixelBuf {
             .collect()
     }
 
-    /// The buffer as `▀` half-block lines.
-    pub fn lines(&self) -> Vec<Line<'static>> {
-        cells_to_lines(self.cells())
+    /// One quadrant-block cell per 2×2 pixels (`h/2 × w/2`, rounded up).
+    /// Where a cell holds more than two colors, `favor` is kept if present.
+    pub fn quadrant_cells(&self, favor: Rgb) -> Vec<Vec<(char, Style)>> {
+        let px = |x: usize, y: usize| {
+            if x < self.w && y < self.h {
+                self.get(x, y)
+            } else {
+                None
+            }
+        };
+        (0..self.h.div_ceil(2))
+            .map(|row| {
+                (0..self.w.div_ceil(2))
+                    .map(|col| {
+                        let (x, y) = (col * 2, row * 2);
+                        quadrant(
+                            [px(x, y), px(x + 1, y), px(x, y + 1), px(x + 1, y + 1)],
+                            favor,
+                        )
+                    })
+                    .collect()
+            })
+            .collect()
     }
+
+    /// The buffer as quadrant-block lines (2×2 pixels per cell).
+    pub fn quadrant_lines(&self, favor: Rgb) -> Vec<Line<'static>> {
+        cells_to_lines(self.quadrant_cells(favor))
+    }
+}
+
+/// Quadrant glyphs indexed by a mask of filled quarters: bit 0 top-left,
+/// bit 1 top-right, bit 2 bottom-left, bit 3 bottom-right.
+const QUADRANTS: [char; 16] = [
+    ' ', '▘', '▝', '▀', '▖', '▌', '▞', '▛', '▗', '▚', '▐', '▜', '▄', '▙', '▟', '█',
+];
+
+/// The glyph and style showing 2×2 pixels (top-left, top-right, bottom-left,
+/// bottom-right) with at most two colors. Extra colors fold into the nearer
+/// of the two kept ones: `favor` if present, plus the most common other.
+fn quadrant(px: [Option<Rgb>; 4], favor: Rgb) -> (char, Style) {
+    let mut seen: Vec<(Option<Rgb>, usize)> = Vec::new();
+    for p in px {
+        match seen.iter_mut().find(|(c, _)| *c == p) {
+            Some((_, n)) => *n += 1,
+            None => seen.push((p, 1)),
+        }
+    }
+    // Most common first (stable, so ties keep reading order).
+    seen.sort_by_key(|&(_, n)| std::cmp::Reverse(n));
+    let a = if seen.iter().any(|(c, _)| *c == Some(favor)) {
+        Some(favor)
+    } else {
+        seen[0].0
+    };
+    let Some(b) = seen.iter().map(|(c, _)| *c).find(|c| *c != a) else {
+        return match a {
+            None => (' ', Style::default()),
+            Some(c) => ('█', Style::default().fg(to_color(c))),
+        };
+    };
+    let dist = |p: Rgb, q: Rgb| {
+        let d = |x: u8, y: u8| (x as i32 - y as i32).pow(2);
+        d(p.r, q.r) + d(p.g, q.g) + d(p.b, q.b)
+    };
+    // Which of `a`/`b` each pixel shows: transparency only where it was.
+    let pick = |p: Option<Rgb>| match (p, a, b) {
+        _ if p == a || p == b => p,
+        (None, _, _) => a,
+        (Some(_), None, other) | (Some(_), other, None) => other,
+        (Some(p), Some(x), Some(y)) => Some(if dist(p, x) <= dist(p, y) { x } else { y }),
+    };
+    // The foreground is a color; the background may be transparent.
+    let (fg, bg) = match (a, b) {
+        (None, Some(c)) => (c, None),
+        (Some(c), other) => (c, other),
+        (None, None) => unreachable!("a and b differ"),
+    };
+    let mask = px
+        .iter()
+        .enumerate()
+        .filter(|&(_, p)| pick(*p) == Some(fg))
+        .fold(0, |m, (i, _)| m | 1 << i);
+    let style = Style::default().fg(to_color(fg));
+    let style = match bg {
+        Some(c) => style.bg(to_color(c)),
+        None => style,
+    };
+    (QUADRANTS[mask], style)
 }
 
 /// The glyph and style showing `top` over `bottom` in a single cell.
@@ -467,6 +552,66 @@ mod tests {
             cell_styles(&plain[fy / 2])[fx],
             cell_styles(&lit[fy / 2])[fx]
         );
+    }
+
+    #[test]
+    fn quadrant_patterns_map_to_glyphs() {
+        let red = Rgb::new(255, 0, 0);
+        let blue = Rgb::new(0, 0, 255);
+        // (mask of red quarters: TL=1 TR=2 BL=4 BR=8, glyph with red in front)
+        let expected = [
+            (0b0001, '▘'),
+            (0b0010, '▝'),
+            (0b0011, '▀'),
+            (0b0100, '▖'),
+            (0b0101, '▌'),
+            (0b0110, '▞'),
+            (0b0111, '▛'),
+            (0b1000, '▗'),
+            (0b1001, '▚'),
+            (0b1010, '▐'),
+            (0b1011, '▜'),
+            (0b1100, '▄'),
+            (0b1101, '▙'),
+            (0b1110, '▟'),
+            (0b1111, '█'),
+        ];
+        for (mask, glyph) in expected {
+            let px: [Option<Rgb>; 4] =
+                std::array::from_fn(|i| Some(if mask & (1 << i) != 0 { red } else { blue }));
+            // Red in front (or alone), blue behind.
+            let (ch, style) = quadrant(px, red);
+            assert_eq!(ch, glyph, "{mask:04b}");
+            assert_eq!(style.fg, Some(to_color(red)), "{mask:04b}");
+            if mask != 0b1111 {
+                assert_eq!(style.bg, Some(to_color(blue)), "{mask:04b}");
+            }
+            // Transparent instead of blue: same glyph, no background.
+            let px = px.map(|p| p.filter(|c| *c == red));
+            let (ch, style) = quadrant(px, blue);
+            assert_eq!((ch, style.bg), (glyph, None), "{mask:04b}");
+        }
+        assert_eq!(quadrant([None; 4], red), (' ', Style::default()));
+    }
+
+    #[test]
+    fn quadrant_cells_fold_extra_colors_and_keep_favored() {
+        let body = Rgb::new(10, 10, 10);
+        let red = Rgb::new(255, 0, 0);
+        let orange = Rgb::new(255, 120, 0);
+        // Body, red, red, orange: body is kept, orange folds into red.
+        let (ch, style) = quadrant([Some(body), Some(red), Some(red), Some(orange)], body);
+        assert_eq!(ch, '▘');
+        assert_eq!(style.fg, Some(to_color(body)));
+        assert_eq!(style.bg, Some(to_color(red)));
+        // Dimensions round up; pixels past the edge are transparent.
+        let mut b = PixelBuf::new(5, 3);
+        b.fill_rect(0, 0, 5, 3, red);
+        let cells = b.quadrant_cells(body);
+        assert_eq!((cells.len(), cells[0].len()), (2, 3));
+        assert_eq!(cells[0][0].0, '█');
+        assert_eq!(cells[0][2].0, '▌');
+        assert_eq!(cells[1][2].0, '▘');
     }
 
     #[test]
