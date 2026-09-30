@@ -9,4 +9,4 @@ description = "SQLite persistence for tuibik sessions and solves"
 anyhow.workspace = true
 thiserror.workspace = true
 rusqlite = { version = "0.31", features = ["bundled"] }
-directories = "5"
+directories = "6"
