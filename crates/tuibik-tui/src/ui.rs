@@ -4,7 +4,6 @@
 //! state, so the responsive breakpoints are unit-testable; the `render_*`
 //! functions then draw into the rectangles it returns.
 
-use cube::render::{NET_COLS, NET_ROWS};
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::symbols::Marker;
@@ -19,6 +18,7 @@ use store::{Penalty, Solve};
 
 use crate::app::{App, Overlay, Screen, ToastKind};
 use crate::bigtext::render_big;
+use crate::cube_widget::net_panel_size;
 use crate::sessions::SessionMode;
 use crate::settings::{Row, ROWS};
 use crate::theme::Theme;
@@ -180,15 +180,13 @@ fn dashboard_layout(area: Rect, ctx: &LayoutCtx, wide: bool) -> LayoutPlan {
     let scramble_lines = wrap_words(ctx.scramble, inner_w).len().max(1) as u16;
     let scramble_h = (scramble_lines + 2).min(main.height / 2).max(3);
 
-    // Tools row: the net at scale 2 (20 rows) when it fits within 40% of the
-    // column, otherwise at scale 1 (11 rows); never squeeze the timer.
-    let net_w_needed = if wide { 50 + 24 } else { 50 };
-    let big = main.height * 4 / 10 >= (NET_ROWS as u16) * 2 + 2 && main.width >= net_w_needed;
-    let desired = if big {
-        NET_ROWS as u16 * 2 + 2
-    } else {
-        NET_ROWS as u16 + 2
-    };
+    // Tools row: the large net when it fits within 40% of the column,
+    // otherwise the compact one; never squeeze the timer.
+    let (big_w, big_h) = net_panel_size(2);
+    let (small_w, small_h) = net_panel_size(1);
+    let net_w_needed = if wide { big_w + 24 } else { big_w };
+    let big = main.height * 4 / 10 >= big_h && main.width >= net_w_needed;
+    let desired = if big { big_h } else { small_h };
     let tools_h = desired.min(main.height.saturating_sub(scramble_h + MIN_TIMER_H));
 
     let mr = Layout::default()
@@ -201,7 +199,7 @@ fn dashboard_layout(area: Rect, ctx: &LayoutCtx, wide: bool) -> LayoutPlan {
         .split(main);
 
     let (tools_cube, tools_chart) = if wide {
-        let cube_w = if big { 50 } else { NET_COLS as u16 * 2 + 2 };
+        let cube_w = if big { big_w } else { small_w };
         let t = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Length(cube_w), Constraint::Min(1)])
@@ -448,6 +446,7 @@ pub fn footer_hints(app: &App) -> Vec<(&'static str, &'static str)> {
             ("s", "sessions"),
             ("o", "settings"),
             ("t", "theme"),
+            ("v", "3D"),
         ],
         Overlay::Preview => vec![("←/→", "step"), ("Esc", "close")],
         Overlay::Sessions => match app.session_menu.as_ref().map(|m| &m.mode) {
@@ -473,6 +472,12 @@ pub fn footer_hints(app: &App) -> Vec<(&'static str, &'static str)> {
             ("Esc", "close"),
         ],
         Overlay::ConfirmDelete => vec![("y", "confirm"), ("n", "cancel")],
+        Overlay::Cube3D => vec![
+            ("←→↑↓", "rotate"),
+            ("a", if app.view3d.spin { "stop spin" } else { "spin" }),
+            ("0", "reset"),
+            ("Esc", "close"),
+        ],
     }
 }
 
@@ -1068,6 +1073,50 @@ fn render_overlay(frame: &mut Frame, app: &App, theme: &Theme) {
             }
             render_confirm_delete(frame, app, theme, area);
         }
+        Overlay::Cube3D => render_cube3d(frame, app, theme, area),
+    }
+}
+
+/// The 3D cube view, covering the dashboard between header and footer.
+fn render_cube3d(frame: &mut Frame, app: &App, theme: &Theme, area: Rect) {
+    let body = Rect::new(
+        area.x,
+        area.y + 1.min(area.height),
+        area.width,
+        area.height.saturating_sub(2),
+    );
+    frame.render_widget(Clear, body);
+    let title = if app.view3d.spin {
+        "Cube 3D · spinning"
+    } else {
+        "Cube 3D"
+    };
+    let block = popup_block(title, theme);
+    let inner = block.inner(body);
+    frame.render_widget(block, body);
+    let view = app.view3d;
+    match crate::cube3d::render_lines(
+        &app.cube,
+        &theme.stickers,
+        view.yaw,
+        view.pitch,
+        inner.width,
+        inner.height,
+    ) {
+        Some(lines) => frame.render_widget(Paragraph::new(lines), inner),
+        None => {
+            let msg = "Terminal too small for the 3D view";
+            let h = (msg.chars().count() as u16)
+                .div_ceil(inner.width.max(1))
+                .min(inner.height);
+            frame.render_widget(
+                Paragraph::new(msg)
+                    .style(Style::default().fg(theme.text))
+                    .alignment(Alignment::Center)
+                    .wrap(Wrap { trim: true }),
+                centered_fixed(inner.width, h, inner),
+            );
+        }
     }
 }
 
@@ -1211,6 +1260,7 @@ fn render_help(frame: &mut Frame, app: &App, theme: &Theme, area: Rect) {
         row("1  2  3", "OK / +2 / DNF for selected solve"),
         row("d", "delete selected solve (asks first)"),
         row("p", "scramble preview (←/→ step)"),
+        row("v", "3D cube view (←→↑↓ rotate, a spin, 0 reset)"),
         row("s", "sessions"),
         row("o", "settings"),
         row("t", "next theme"),
@@ -2047,10 +2097,11 @@ mod tests {
         let app = app_with(&[]);
         let term = draw(&app, 200, 60);
         let text = screen_text(&term);
-        // Scale 2 stickers are 4 columns wide: 4 consecutive blocks appear.
-        assert!(text.contains("████████"), "scale-2 net");
+        // Only the large layout labels the center stickers.
+        assert!(text.contains("█F█"), "scale-2 net\n{text}");
         let small = render_text(&app, 110, 32);
-        assert!(small.contains("██"));
+        assert!(small.contains("▀▀█▀▀█▀▀"), "compact net\n{small}");
+        assert!(!small.contains("█F█"));
     }
 
     #[test]
@@ -2083,6 +2134,7 @@ mod tests {
             Overlay::Settings,
             Overlay::Detail,
             Overlay::ConfirmDelete,
+            Overlay::Cube3D,
         ] {
             let mut app = app_with(&[10_000]);
             match which {
@@ -2092,6 +2144,7 @@ mod tests {
                 Overlay::Settings => app.handle_input(Input::Settings),
                 Overlay::Detail => app.handle_input(Input::Confirm),
                 Overlay::ConfirmDelete => app.handle_input(Input::Delete),
+                Overlay::Cube3D => app.handle_input(Input::Toggle3d),
                 Overlay::None => {}
             }
             assert_eq!(app.overlay, which);
@@ -2282,6 +2335,7 @@ mod tests {
                     Overlay::Settings => app.handle_input(Input::Settings),
                     Overlay::Detail => app.handle_input(Input::Confirm),
                     Overlay::ConfirmDelete => app.handle_input(Input::Delete),
+                    Overlay::Cube3D => app.handle_input(Input::Toggle3d),
                     Overlay::None => {}
                 }
                 let _ = render_text(&app, w, h);
@@ -2289,7 +2343,7 @@ mod tests {
         }
     }
 
-    const ALL: [Overlay; 7] = [
+    const ALL: [Overlay; 8] = [
         Overlay::None,
         Overlay::Sessions,
         Overlay::Preview,
@@ -2297,7 +2351,67 @@ mod tests {
         Overlay::Settings,
         Overlay::Detail,
         Overlay::ConfirmDelete,
+        Overlay::Cube3D,
     ];
+
+    #[test]
+    fn cube3d_view_renders_and_footer_lists_its_keys() {
+        let mut app = app_with(&[]);
+        let dash = footer_hints(&app);
+        assert!(dash.iter().any(|(k, _)| *k == "v"));
+        app.handle_input(Input::Toggle3d);
+        let hints = footer_hints(&app);
+        assert_ne!(dash, hints);
+        for desc in ["rotate", "spin", "reset", "close"] {
+            assert!(hints.iter().any(|(_, d)| *d == desc), "{desc}");
+        }
+        let text = render_text(&app, 110, 32);
+        assert!(text.contains("Cube 3D"), "{text}");
+        assert!(text.contains('▀'), "half-block pixels");
+        let footer = text.lines().last().unwrap();
+        assert!(
+            footer.contains("rotate") && footer.contains("0 reset"),
+            "{footer}"
+        );
+        // The dashboard panels are covered while the view is open.
+        assert!(!text.contains("History"));
+        app.handle_input(Input::ToggleSpin);
+        assert!(footer_hints(&app).iter().any(|(_, d)| *d == "stop spin"));
+        assert!(render_text(&app, 110, 32).contains("spinning"));
+    }
+
+    #[test]
+    fn cube3d_view_refits_on_resize_and_handles_tiny_terminals() {
+        let mut app = app_with(&[]);
+        app.handle_input(Input::Toggle3d);
+        let rendered_rows = |text: &str| text.lines().filter(|l| l.contains('▀')).count();
+        let small = render_text(&app, 60, 16);
+        let big = render_text(&app, 160, 50);
+        assert!(rendered_rows(&big) > rendered_rows(&small));
+        // Minimum dashboard size still draws the cube.
+        assert!(render_text(&app, 40, 12).contains('▀'));
+        // Below it the terminal-too-small message is shown instead.
+        let tiny = render_text(&app, 30, 10);
+        let flat = tiny.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(flat.contains("Terminal too small"), "{tiny}");
+        for (w, h) in [(1, 1), (5, 2), (39, 12), (40, 11)] {
+            let _ = render_text(&app, w, h);
+        }
+    }
+
+    #[test]
+    fn cube3d_panel_too_small_message() {
+        let app = app_with(&[]);
+        let theme = app.theme();
+        let mut terminal = Terminal::new(TestBackend::new(20, 8)).unwrap();
+        terminal
+            .draw(|f| render_cube3d(f, &app, theme, f.area()))
+            .unwrap();
+        let text = screen_text(&terminal);
+        let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(flat.contains("Terminal too small"), "{text}");
+        assert!(!text.contains('▀'));
+    }
 
     #[test]
     fn preview_highlights_current_move_in_scramble() {

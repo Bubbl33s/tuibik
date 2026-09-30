@@ -18,6 +18,12 @@ pub const TOAST_MS: u64 = 3000;
 /// Solves shorter than this (that were not inspection timeouts) are treated as
 /// key-autorepeat glitches and discarded.
 const MIN_SOLVE_MS: i64 = 200;
+/// Rotation of the 3D view per key press (degrees).
+pub const VIEW_STEP_DEG: f32 = 15.0;
+/// Auto-spin speed of the 3D view (degrees per second).
+const SPIN_DEG_PER_S: f32 = 60.0;
+/// The 3D view's pitch limit, so the cube never flips over the poles.
+pub const MAX_PITCH_DEG: f32 = 89.0;
 
 /// The modal layer shown over (or instead of parts of) the dashboard.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -30,6 +36,66 @@ pub enum Overlay {
     Settings,
     Detail,
     ConfirmDelete,
+    /// Interactive 3D view of the current cube.
+    Cube3D,
+}
+
+/// Orientation and spin state of the 3D cube view.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct View3d {
+    /// Rotation about the vertical axis (degrees, 0..360 once rotated).
+    pub yaw: f32,
+    /// Rotation about the horizontal screen axis (degrees, clamped).
+    pub pitch: f32,
+    /// Whether the cube keeps turning on its own.
+    pub spin: bool,
+    /// Timestamp of the last auto-spin step.
+    last_spin_ms: Option<u64>,
+}
+
+impl Default for View3d {
+    fn default() -> Self {
+        View3d {
+            yaw: crate::cube3d::DEFAULT_YAW,
+            pitch: crate::cube3d::DEFAULT_PITCH,
+            spin: false,
+            last_spin_ms: None,
+        }
+    }
+}
+
+impl View3d {
+    /// Turn by the given angles, keeping yaw in 0..360 and pitch in range.
+    pub fn rotate(&mut self, d_yaw: f32, d_pitch: f32) {
+        self.yaw = (self.yaw + d_yaw).rem_euclid(360.0);
+        self.pitch = (self.pitch + d_pitch).clamp(-MAX_PITCH_DEG, MAX_PITCH_DEG);
+    }
+
+    /// Back to the default orientation (spin is left as it is).
+    pub fn reset(&mut self) {
+        let spin = self.spin;
+        let last = self.last_spin_ms;
+        *self = View3d::default();
+        self.spin = spin;
+        self.last_spin_ms = last;
+    }
+
+    fn set_spin(&mut self, on: bool, now: u64) {
+        self.spin = on;
+        self.last_spin_ms = on.then_some(now);
+    }
+
+    /// Advance auto-spin to `now`.
+    fn tick(&mut self, now: u64) {
+        if !self.spin {
+            return;
+        }
+        if let Some(last) = self.last_spin_ms {
+            let dt = now.saturating_sub(last) as f32 / 1000.0;
+            self.rotate(dt * SPIN_DEG_PER_S, 0.0);
+        }
+        self.last_spin_ms = Some(now);
+    }
 }
 
 /// Which screen is shown, derived from the timer phase (never stored).
@@ -133,6 +199,8 @@ pub struct App {
     pub last_result: Option<LastResult>,
     /// The current toast, if any.
     pub toast: Option<Toast>,
+    /// Orientation of the 3D cube view (kept between openings).
+    pub view3d: View3d,
 }
 
 impl App {
@@ -206,6 +274,7 @@ impl App {
             settings_selected: 0,
             last_result: None,
             toast: None,
+            view3d: View3d::default(),
         };
         if !enhanced {
             app.notify_for(
@@ -412,6 +481,7 @@ impl App {
             Overlay::Settings => self.handle_settings_input(input),
             Overlay::Detail => self.handle_detail_input(input),
             Overlay::ConfirmDelete => self.handle_confirm_delete_input(input),
+            Overlay::Cube3D => self.handle_cube3d_input(input, now),
         }
     }
 
@@ -448,8 +518,36 @@ impl App {
             Input::ToggleTheme => self.cycle_theme(),
             Input::Help => self.overlay = Overlay::Help,
             Input::Settings => self.open_settings(),
+            Input::Toggle3d => self.overlay = Overlay::Cube3D,
             _ => {}
         }
+    }
+
+    // ===== 3D view =====
+
+    fn handle_cube3d_input(&mut self, input: Input, now: u64) {
+        let step = VIEW_STEP_DEG;
+        match input {
+            Input::Toggle3d | Input::Cancel | Input::Quit => {
+                self.view3d.set_spin(false, now);
+                self.overlay = Overlay::None;
+            }
+            Input::Left => self.view3d.rotate(-step, 0.0),
+            Input::Right => self.view3d.rotate(step, 0.0),
+            Input::Up => self.view3d.rotate(0.0, -step),
+            Input::Down => self.view3d.rotate(0.0, step),
+            Input::ToggleSpin => {
+                let on = !self.view3d.spin;
+                self.view3d.set_spin(on, now);
+            }
+            Input::ResetView => self.view3d.reset(),
+            _ => {}
+        }
+    }
+
+    /// Whether the screen changes on its own and needs frequent redraws.
+    pub fn needs_fast_ticks(&self) -> bool {
+        self.timer.is_active() || (self.overlay == Overlay::Cube3D && self.view3d.spin)
     }
 
     // ===== Scramble preview =====
@@ -925,6 +1023,9 @@ impl App {
         if self.toast.as_ref().is_some_and(|t| now >= t.deadline_ms) {
             self.toast = None;
         }
+        if self.overlay == Overlay::Cube3D {
+            self.view3d.tick(now);
+        }
     }
 }
 
@@ -1338,6 +1439,7 @@ mod tests {
             Input::TogglePreview,
             Input::Settings,
             Input::Help,
+            Input::Toggle3d,
             Input::Up,
             Input::Penalty(Penalty::Dnf),
             Input::Quit,
@@ -1375,18 +1477,20 @@ mod tests {
             Overlay::Settings => app.handle_input(Input::Settings),
             Overlay::Detail => app.handle_input(Input::Confirm),
             Overlay::ConfirmDelete => app.handle_input(Input::Delete),
+            Overlay::Cube3D => app.handle_input(Input::Toggle3d),
             Overlay::None => {}
         }
         assert_eq!(app.overlay, which);
     }
 
-    const ALL_OVERLAYS: [Overlay; 6] = [
+    const ALL_OVERLAYS: [Overlay; 7] = [
         Overlay::Sessions,
         Overlay::Preview,
         Overlay::Help,
         Overlay::Settings,
         Overlay::Detail,
         Overlay::ConfirmDelete,
+        Overlay::Cube3D,
     ];
 
     #[test]
@@ -1445,6 +1549,98 @@ mod tests {
             Overlay::None,
             "nothing to open in an empty session"
         );
+    }
+
+    // ----- 3D view -----
+
+    #[test]
+    fn cube_view_opens_and_closes_with_v_and_esc() {
+        let mut app = App::test_app(1, true);
+        app.handle_input(Input::Toggle3d);
+        assert_eq!(app.overlay, Overlay::Cube3D);
+        app.handle_input(Input::Toggle3d);
+        assert_eq!(app.overlay, Overlay::None);
+        app.handle_input(Input::Toggle3d);
+        app.handle_input(Input::Cancel);
+        assert_eq!(app.overlay, Overlay::None);
+        assert!(!app.should_quit);
+    }
+
+    #[test]
+    fn cube_view_not_openable_while_timer_active() {
+        let mut app = App::test_app(1, true);
+        app.handle_input_at(Input::HoldPress, 0);
+        assert_eq!(app.timer.phase, Phase::Arming);
+        app.handle_input_at(Input::Toggle3d, 10);
+        assert_eq!(app.overlay, Overlay::None);
+        // Fallback mode: Space starts the run straight away.
+        let mut app = App::test_app(1, false);
+        app.handle_input_at(Input::HoldPress, 0);
+        assert_eq!(app.timer.phase, Phase::Running);
+        app.handle_input_at(Input::Toggle3d, 1_000);
+        assert_ne!(app.overlay, Overlay::Cube3D);
+    }
+
+    #[test]
+    fn cube_view_arrows_rotate_and_pitch_is_clamped() {
+        let mut app = App::test_app(1, true);
+        app.handle_input(Input::Toggle3d);
+        let start = app.view3d;
+        app.handle_input(Input::Left);
+        assert_ne!(app.view3d.yaw, start.yaw);
+        assert_eq!(app.view3d.pitch, start.pitch);
+        app.handle_input(Input::Right);
+        assert!((app.view3d.yaw.rem_euclid(360.0) - start.yaw.rem_euclid(360.0)).abs() < 1e-3);
+        for _ in 0..30 {
+            app.handle_input(Input::Down);
+        }
+        assert_eq!(app.view3d.pitch, MAX_PITCH_DEG);
+        for _ in 0..30 {
+            app.handle_input(Input::Up);
+        }
+        assert_eq!(app.view3d.pitch, -MAX_PITCH_DEG);
+        // The dashboard selection is untouched while the view is open.
+        assert_eq!(app.history_selected, 0);
+    }
+
+    #[test]
+    fn cube_view_reset_restores_default_orientation() {
+        let mut app = App::test_app(1, true);
+        app.handle_input(Input::Toggle3d);
+        app.handle_input(Input::Left);
+        app.handle_input(Input::Up);
+        app.handle_input(Input::ResetView);
+        assert_eq!(app.view3d, View3d::default());
+    }
+
+    #[test]
+    fn cube_view_auto_spin_advances_with_time_and_stops() {
+        let mut app = App::test_app(1, true);
+        app.handle_input_at(Input::Toggle3d, 0);
+        assert!(!app.needs_fast_ticks());
+        app.handle_input_at(Input::ToggleSpin, 1_000);
+        assert!(app.needs_fast_ticks());
+        let y0 = app.view3d.yaw;
+        app.tick_at(1_500);
+        let y1 = app.view3d.yaw;
+        let turned = (y1 - y0).rem_euclid(360.0);
+        assert!((turned - SPIN_DEG_PER_S / 2.0).abs() < 1e-3, "{y0} -> {y1}");
+        app.handle_input_at(Input::ToggleSpin, 1_600);
+        app.tick_at(3_000);
+        assert_eq!(app.view3d.yaw, y1, "stopped");
+        // Closing stops the spin too.
+        app.handle_input_at(Input::ToggleSpin, 3_000);
+        app.handle_input_at(Input::Cancel, 3_100);
+        assert!(!app.view3d.spin);
+        assert!(!app.needs_fast_ticks());
+    }
+
+    #[test]
+    fn fast_ticks_only_while_timing_or_spinning() {
+        let mut app = App::test_app(1, true);
+        assert!(!app.needs_fast_ticks());
+        app.handle_input_at(Input::HoldPress, 0);
+        assert!(app.needs_fast_ticks());
     }
 
     // ----- post-solve feedback -----

@@ -2,6 +2,7 @@
 
 mod app;
 mod bigtext;
+mod cube3d;
 mod cube_widget;
 mod event;
 mod sessions;
@@ -30,8 +31,10 @@ use event::Input;
 
 type Tui = Terminal<CrosstermBackend<Stdout>>;
 
-/// Tick interval for live timer updates / redraws.
+/// Tick interval for live timer updates / redraws while something animates.
 const TICK: Duration = Duration::from_millis(30);
+/// Tick interval otherwise (toast expiry); input still wakes the loop at once.
+const IDLE_TICK: Duration = Duration::from_millis(250);
 
 fn main() -> Result<()> {
     let mut terminal = init_terminal()?;
@@ -100,8 +103,14 @@ fn run(terminal: &mut Tui, app: &mut App) -> Result<()> {
     while !app.should_quit {
         terminal.draw(|frame| ui::render(frame, app))?;
 
-        // Poll for input with a timeout so we still tick for the live timer.
-        if cevent::poll(TICK)? {
+        // Poll for input with a timeout so we still tick for the live timer
+        // and the spinning 3D view; poll slowly when nothing moves.
+        let timeout = if app.needs_fast_ticks() {
+            TICK
+        } else {
+            IDLE_TICK
+        };
+        if cevent::poll(timeout)? {
             match cevent::read()? {
                 Event::Key(key) => {
                     let input = event::classify_key(key, app.key_context());

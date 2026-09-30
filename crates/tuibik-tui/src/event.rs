@@ -47,6 +47,12 @@ pub enum Input {
     Rename,
     TogglePreview,
     ToggleTheme,
+    /// `v`: open / close the 3D cube view.
+    Toggle3d,
+    /// `a`: auto-spin in the 3D view.
+    ToggleSpin,
+    /// `0`: reset the 3D view orientation.
+    ResetView,
     /// `?`.
     Help,
     /// `o`.
@@ -142,6 +148,9 @@ fn normal_key(code: KeyCode, is_repeat: bool) -> Input {
         KeyCode::Char('r') => Input::Rename,
         KeyCode::Char('p') => Input::TogglePreview,
         KeyCode::Char('t') => Input::ToggleTheme,
+        KeyCode::Char('v') => Input::Toggle3d,
+        KeyCode::Char('a') => Input::ToggleSpin,
+        KeyCode::Char('0') => Input::ResetView,
         KeyCode::Char('o') => Input::Settings,
         KeyCode::Char('?') => Input::Help,
         KeyCode::Char('y') => Input::Yes,
@@ -325,6 +334,31 @@ mod tests {
         assert_eq!(
             classify_key(press(KeyCode::Char('1')), norm()),
             Input::Penalty(Penalty::Ok)
+        );
+    }
+
+    #[test]
+    fn cube_view_keys() {
+        assert_eq!(
+            classify_key(press(KeyCode::Char('v')), norm()),
+            Input::Toggle3d
+        );
+        assert_eq!(
+            classify_key(press(KeyCode::Char('a')), norm()),
+            Input::ToggleSpin
+        );
+        assert_eq!(
+            classify_key(press(KeyCode::Char('0')), norm()),
+            Input::ResetView
+        );
+        // Timing and text entry keep their own meaning.
+        assert_eq!(
+            classify_key(press(KeyCode::Char('v')), timing()),
+            Input::OtherKey
+        );
+        assert_eq!(
+            classify_key(press(KeyCode::Char('v')), text()),
+            Input::Char('v')
         );
     }
 
