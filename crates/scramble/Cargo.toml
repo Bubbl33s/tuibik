@@ -8,5 +8,5 @@ description = "WCA random-state scramble generation for tuibik (wraps min2phase)
 [dependencies]
 cube = { path = "../cube" }
 min2phase = "0.2"
-rand = "0.8"
+rand = "0.10"
 thiserror.workspace = true

@@ -7,7 +7,7 @@
 
 use cube::{facelet, parse_sequence, Cube, CubieCube, Move};
 use rand::rngs::StdRng;
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 
 /// A generated scramble: the parsed moves plus their WCA-notation text.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -46,7 +46,8 @@ pub struct Scrambler {
 impl Scrambler {
     /// Build a scrambler with tables ready and an OS-seeded RNG.
     pub fn new() -> Self {
-        Self::from_rng(StdRng::from_entropy())
+        let mut rng = rand::rng();
+        Self::from_rng(StdRng::from_rng(&mut rng))
     }
 
     /// Build a scrambler with a fixed RNG seed (deterministic, for tests).
@@ -108,11 +109,11 @@ fn random_state(rng: &mut StdRng) -> CubieCube {
     }
     // Orientations: last piece is fixed by the twist/flip sum constraints.
     for i in 0..7 {
-        cc.co[i] = rng.gen_range(0..3);
+        cc.co[i] = rng.random_range(0..3);
     }
     cc.co[7] = (3 - cc.co[..7].iter().sum::<u8>() % 3) % 3;
     for i in 0..11 {
-        cc.eo[i] = rng.gen_range(0..2);
+        cc.eo[i] = rng.random_range(0..2);
     }
     cc.eo[11] = cc.eo[..11].iter().sum::<u8>() % 2;
     cc
@@ -122,7 +123,7 @@ fn random_state(rng: &mut StdRng) -> CubieCube {
 fn shuffle<const N: usize>(rng: &mut StdRng, a: &mut [u8; N]) -> u8 {
     let mut parity = 0;
     for i in 0..N - 1 {
-        let j = rng.gen_range(i..N);
+        let j = rng.random_range(i..N);
         if i != j {
             a.swap(i, j);
             parity ^= 1;
