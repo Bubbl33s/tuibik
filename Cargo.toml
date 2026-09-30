@@ -11,9 +11,15 @@ members = [
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.88"
 license = "MIT OR Apache-2.0"
 authors = ["tuibik contributors"]
-repository = ""
+description = "A csTimer-style terminal user interface for timing Rubik's Cube solves"
+repository = "https://github.com/Bubbl33s/tuibik"
+homepage = "https://github.com/Bubbl33s/tuibik"
+documentation = "https://github.com/Bubbl33s/tuibik#readme"
+keywords = ["rubiks-cube", "speedcubing", "timer", "tui"]
+categories = ["command-line-utilities"]
 
 [workspace.dependencies]
 anyhow = "1.0"

@@ -2,7 +2,13 @@
 name = "scramble"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+keywords.workspace = true
+categories.workspace = true
 description = "WCA random-state scramble generation for tuibik (wraps min2phase)"
 
 [dependencies]

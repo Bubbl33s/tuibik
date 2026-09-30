@@ -2,7 +2,13 @@
 name = "cube"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+keywords.workspace = true
+categories.workspace = true
 description = "3x3 Rubik's cube model, WCA move notation, and net rendering data for tuibik"
 
 [dependencies]

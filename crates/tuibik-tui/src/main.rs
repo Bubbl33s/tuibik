@@ -38,7 +38,34 @@ const ANIM_TICK: Duration = Duration::from_millis(16);
 /// Tick interval otherwise (toast expiry); input still wakes the loop at once.
 const IDLE_TICK: Duration = Duration::from_millis(250);
 
+const USAGE: &str = "Usage: tuibik [OPTIONS]\n\nA csTimer-style terminal Rubik's Cube timer.\n\nOptions:\n  -h, --help     Print help\n  -V, --version  Print version";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CommandLineAction {
+    Run,
+    Help,
+    Version,
+}
+
 fn main() -> Result<()> {
+    match parse_command_line(std::env::args_os().skip(1)) {
+        Ok(CommandLineAction::Help) => {
+            println!("{USAGE}");
+            return Ok(());
+        }
+        Ok(CommandLineAction::Version) => {
+            println!("tuibik {}", env!("CARGO_PKG_VERSION"));
+            return Ok(());
+        }
+        Ok(CommandLineAction::Run) => {}
+        Err(argument) => {
+            anyhow::bail!(
+                "unsupported argument: {}\n\nTry 'tuibik --help' for more information.",
+                argument.to_string_lossy()
+            );
+        }
+    }
+
     let mut terminal = init_terminal()?;
     // Whether the terminal supports the Kitty keyboard protocol (key release
     // events), needed for the hold-to-arm timer.
@@ -49,6 +76,27 @@ fn main() -> Result<()> {
 
     restore_terminal(enhanced);
     res
+}
+
+/// Recognize the small non-interactive interface before the TUI changes the
+/// terminal state. Any unsupported or additional argument is rejected.
+fn parse_command_line(
+    arguments: impl IntoIterator<Item = std::ffi::OsString>,
+) -> Result<CommandLineAction, std::ffi::OsString> {
+    let mut arguments = arguments.into_iter();
+    let Some(argument) = arguments.next() else {
+        return Ok(CommandLineAction::Run);
+    };
+
+    if arguments.next().is_some() {
+        return Err(argument);
+    }
+
+    match argument.to_str() {
+        Some("-h" | "--help") => Ok(CommandLineAction::Help),
+        Some("-V" | "--version") => Ok(CommandLineAction::Version),
+        _ => Err(argument),
+    }
 }
 
 /// Set up raw mode + alternate screen and a panic hook that restores the

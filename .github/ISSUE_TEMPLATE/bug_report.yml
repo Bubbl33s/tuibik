@@ -1,0 +1,43 @@
+name: Bug report
+description: Report a reproducible problem with tuibik.
+title: "bug: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: "Do not report security vulnerabilities here. Use the private Security Advisory route in SECURITY.md."
+  - type: input
+    id: version
+    attributes:
+      label: tuibik version
+      description: Include `tuibik --version` output or the commit SHA.
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: Operating system, architecture, terminal emulator, and terminal size.
+      placeholder: "Fedora 42 x86_64, foot 1.28, 120x40"
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      placeholder: "1. Start tuibik ..."
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behaviour
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behaviour
+      description: Include relevant output, screenshots, or recordings. Remove personal data.
+    validations:
+      required: true
