@@ -211,7 +211,7 @@ jobs:
             for asset in "${allowed[@]}"; do
               if [[ " ${assets[*]} " == *" $asset "* ]]; then
                 mkdir -p existing
-                gh release download "$TAG" --pattern "$asset" --dir existing
+                gh release download "$TAG" --repo "$REPOSITORY" --pattern "$asset" --dir existing
                 cmp --silent "$asset" "existing/$asset" || {
                   echo "Existing asset '$asset' conflicts with this release." >&2
                   exit 1
@@ -221,8 +221,8 @@ jobs:
               fi
             done
             if (( ${#missing[@]} )); then
-              gh release upload "$TAG" "${missing[@]}"
+              gh release upload "$TAG" --repo "$REPOSITORY" "${missing[@]}"
             fi
           else
-            gh release create "$TAG" --target "$COMMIT" --title "tuibik $TAG" --generate-notes "${expected[@]}" SHA256SUMS
+            gh release create "$TAG" --repo "$REPOSITORY" --target "$COMMIT" --title "tuibik $TAG" --generate-notes "${expected[@]}" SHA256SUMS
           fi
