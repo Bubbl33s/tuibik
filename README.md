@@ -7,6 +7,8 @@ with [ratatui](https://ratatui.rs) + [crossterm](https://github.com/crossterm-rs
 
 ![tuibik dashboard showing the scramble, timer, statistics, solve history, cube net, and chart](docs/images/dashboard.png)
 
+![tuibik compact dashboard layout in a smaller terminal](docs/images/compact-dashboard.png)
+
 - **WCA random-state scrambles** via the Kociemba two-phase solver
   ([`min2phase`](https://crates.io/crates/min2phase)); the scramble
   always wraps so every move is readable.
