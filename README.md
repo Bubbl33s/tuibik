@@ -4,7 +4,7 @@ A csTimer-style **Rubik's Cube 3×3 timer for your terminal**, written in Rust
 with [ratatui](https://ratatui.rs) + [crossterm](https://github.com/crossterm-rs/crossterm).
 
 - **WCA random-state scrambles** via the Kociemba two-phase solver
-  ([`m2p-core`](https://github.com/RuiminYan/min2phase-rust)); the scramble
+  ([`min2phase`](https://crates.io/crates/min2phase)); the scramble
   always wraps so every move is readable.
 - **Big, centered timer** with a text state label (`HOLD` / `READY` /
   `INSPECT` / `SOLVING`). While you arm, inspect or solve, every panel gets out
@@ -35,8 +35,7 @@ with [ratatui](https://ratatui.rs) + [crossterm](https://github.com/crossterm-rs
 
 ## Build & run
 
-Requires a Rust toolchain (stable). The first build downloads `m2p-core` from
-git, so `.cargo/config.toml` enables `git-fetch-with-cli`.
+Requires a Rust toolchain (stable).
 
 ```bash
 cargo run --release
@@ -101,12 +100,22 @@ recorded as a DNF. `Esc` cancels inspection without recording anything.
 ## Workspace layout
 
 - `cube` — cube model (cubie-level), WCA move notation, and net rendering data.
-- `scramble` — WCA random-state scramble generation (wraps `m2p-core`).
+- `scramble` — WCA random-state scramble generation (wraps `min2phase`).
 - `stats` — speedcubing statistics (means, deviations, WCA averages).
 - `store` — SQLite persistence for sessions, solves, and config.
 - `tuibik-tui` — the terminal UI (`tuibik` binary).
 
 ## License
 
-GPL-3.0-or-later. This project links `m2p-core`, which is GPL-3.0-or-later; see
-[`LICENSE`](LICENSE).
+Licensed under either of
+
+- Apache License, Version 2.0 ([`LICENSE-APACHE`](LICENSE-APACHE))
+- MIT license ([`LICENSE-MIT`](LICENSE-MIT))
+
+at your option.
+
+### Contribution
+
+Unless you explicitly state otherwise, any contribution intentionally submitted
+for inclusion in the work by you, as defined in the Apache-2.0 license, shall be
+dual licensed as above, without any additional terms or conditions.
