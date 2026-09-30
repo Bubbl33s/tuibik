@@ -1,32 +1,4 @@
-# cube-3d-view Specification
-
-## Purpose
-
-Defines an interactive 3D rendering of the cube in the terminal, letting the user inspect all faces of the current cube state by rotating it.
-
-## Requirements
-
-### Requirement: 3D view shows the current cube
-The system SHALL provide a 3D view rendering the cube in its current scrambled state, with each visible sticker colored according to the active color theme and adjacent stickers and cubies visibly separated.
-
-#### Scenario: Scrambled state
-- **WHEN** the 3D view is opened after a scramble is generated
-- **THEN** the rendered stickers match the state shown in the 2D net
-
-#### Scenario: Only front-facing surfaces
-- **WHEN** the cube is rendered at any orientation
-- **THEN** only faces turned toward the viewer are visible and nearer surfaces occlude farther ones
-
-### Requirement: Open and close the 3D view
-The user SHALL be able to open the 3D view from the idle dashboard with `v` and close it with `Esc` or `v`. The 3D view SHALL NOT be available while a solve is in progress.
-
-#### Scenario: Open and close
-- **WHEN** the user presses `v` on the idle dashboard, then `Esc`
-- **THEN** the 3D view appears and then the dashboard returns unchanged
-
-#### Scenario: Timer engaged
-- **WHEN** the timer is arming, in inspection, or running
-- **THEN** `v` does not open the 3D view
+## MODIFIED Requirements
 
 ### Requirement: Interactive rotation
 While the 3D view is open, the user SHALL have two kinds of rotation controls. **Fixed axis controls**: `x`/`X`, `y`/`Y` and `z`/`Z` SHALL turn the cube exactly 90° about the cube's own R–L, U–D and F–B axes respectively (whatever its current orientation), lowercase in one direction and uppercase in the opposite direction, so four presses return the cube to its starting orientation. Each turn SHALL be animated smoothly with easing over a short time (well under half a second) and SHALL end exactly on the 90° orientation; presses made during an animation SHALL chain without jumps. **Free controls**: the arrow keys and `h`/`j`/`k`/`l` SHALL rotate the cube immediately in small steps about the vertical and horizontal screen axes, with no limit that stops the cube from turning past the poles. `a` SHALL toggle continuous auto-spin, and `0` or `Home` SHALL reset the default orientation showing the U, F and R faces.
@@ -67,23 +39,14 @@ While the 3D view is open, the user SHALL have two kinds of rotation controls. *
 - **WHEN** the user has rotated the cube by any combination of controls and presses `0`
 - **THEN** the cube returns to the default orientation showing U, F and R faces
 
-### Requirement: Adapts to terminal size
-The 3D view SHALL scale to fit the available area, stay centered, and show a readable message instead of drawing when the area is too small.
-
-#### Scenario: Resize
-- **WHEN** the terminal is resized while the 3D view is open
-- **THEN** the cube is re-fit to the new area without artifacts
-
-#### Scenario: Tiny terminal
-- **WHEN** the available area is smaller than the minimum drawable size
-- **THEN** a "terminal too small" message is shown and no panic occurs
-
 ### Requirement: Discoverable key
 The help overlay and the footer hints SHALL list the 3D view key and, while the view is open, its fixed axis controls, free rotation controls, spin, reset and close keys.
 
 #### Scenario: Footer while open
 - **WHEN** the 3D view is open
 - **THEN** the footer lists the axis, free rotate, spin, reset and close keys
+
+## ADDED Requirements
 
 ### Requirement: Responsive input
 The 3D view SHALL stay responsive while keys are held or pressed rapidly: pending input SHALL be applied together before the next redraw so the displayed orientation never lags behind the keys pressed, and no key press SHALL be dropped or stuck.
@@ -106,3 +69,9 @@ The 3D view SHALL draw the cube with finer than half-cell resolution (at least 2
 #### Scenario: Any orientation
 - **WHEN** the cube is at any orientation, including after fixed and free rotations combined
 - **THEN** no part of it is clipped by the edge of the drawing area
+
+## REMOVED Requirements
+
+### Requirement: Pitch clamp
+**Reason**: Fixed axis controls and unconstrained free rotation make the clamp unnecessary and it prevented reaching the bottom face.
+**Migration**: Use `x`/`X` for exact vertical flips; free rotation now continues through the poles.
