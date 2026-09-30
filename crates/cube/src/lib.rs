@@ -1,6 +1,6 @@
 //! `cube` — 3x3 Rubik's cube model, WCA move notation, and net rendering data.
 
-pub   mod cube;
+pub mod cube;
 pub mod cubie;
 pub mod facelet;
 pub mod moves;
