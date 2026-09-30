@@ -1,5 +1,7 @@
 # tuibik
 
+![CI](https://github.com/Bubbl33s/tuibik/actions/workflows/ci.yml/badge.svg)
+
 A csTimer-style **Rubik's Cube 3×3 timer for your terminal**, written in Rust
 with [ratatui](https://ratatui.rs) + [crossterm](https://github.com/crossterm-rs/crossterm).
 
