@@ -2,7 +2,7 @@
 
 ## 1. Record ownership and governance policy
 
-- [ ] 1.1 Add `.github/CODEOWNERS` with a catch-all ownership entry for the current maintainer and future-maintainer guidance; verify GitHub recognizes the file and its `*` rule covers a changed repository path.
+- [x] 1.1 Add `.github/CODEOWNERS` with a catch-all ownership entry for the current maintainer and future-maintainer guidance; verify GitHub recognizes the file and its `*` rule covers a changed repository path.
 - [x] 1.2 Confirm `prepare-0-1-0-oss-documentation` has delivered `CONTRIBUTING.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md`, and templates before merging this change; verify this change neither creates nor duplicates those files.
 
 ## 2. Document GitHub-hosted enforcement
@@ -13,6 +13,6 @@
 
 ## 3. Configure and validate GitHub settings
 
-- [ ] 3.1 After the quality-gates workflow is merged, configure the documented `main` ruleset in GitHub using its exact CI check names; verify a non-bypass direct update is rejected and a pull request displays the required checks.
-- [ ] 3.2 Configure the documented `v*` tag ruleset in GitHub; verify an unauthorized actor cannot create, update, or delete a matching release tag.
-- [ ] 3.3 Review the repository ruleset pages after merge; verify the configured controls match the committed checklist and its links to the OSS documentation community-health files.
+- [x] 3.1 After the quality-gates workflow is merged, configure the documented `main` ruleset in GitHub using its exact CI check names; verify a non-bypass direct update is rejected and a pull request displays the required checks. Verified against the live ruleset configuration; not exercised with a non-admin account because none with Write access exists.
+- [x] 3.2 Configure the documented `v*` tag ruleset in GitHub; verify an unauthorized actor cannot create, update, or delete a matching release tag. Verified against the live ruleset configuration; not exercised with a non-admin account because none with Write access exists.
+- [x] 3.3 Review the repository ruleset pages after merge; verify the configured controls match the committed checklist and its links to the OSS documentation community-health files.
