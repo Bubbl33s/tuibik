@@ -1,0 +1,9 @@
+# Code owners for tuibik.
+#
+# The repository has one maintainer, so every path is owned by them. When an
+# independent co-maintainer joins, add their handle to the catch-all rule in a
+# reviewed pull request and follow the co-maintainer transition steps in
+# docs/governance.md. Add path-specific rules below the catch-all only once
+# subsystem ownership is established; later rules take precedence.
+
+* @Bubbl33s

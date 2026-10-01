@@ -18,7 +18,7 @@ crea un ruleset para la rama `main` en **Settings > Rules > Rulesets**.
 Mientras Valeria sea la única mantenedora, no configures un número mínimo de
 aprobaciones: GitHub no permite que la autora apruebe su propia pull request.
 Cuando haya otra mantenedora, configura una aprobación obligatoria y revisión
-de code owner según la política de gobernanza.
+de code owner según la [política de gobernanza](../docs/governance.md).
 
 ## Verificación
 
